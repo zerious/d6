@@ -1,24 +1,13 @@
-var cwd = process.cwd();
-var pkg = require(cwd + '/package.json');
+var dir = __dirname;
+var version = require(dir + '/package.json').version;
 
-exports.version = pkg.version;
-
-require('figlet').text('D6 Client v' + exports.version, {font: 'Standard'}, function (err, figlet) {
+require('figlet').text('D6 Client v' + version, {font: 'Standard'}, function (err, figlet) {
 
   figlet = figlet.replace(/\n/g, '\n *');
 
   var source = require('chug')([
-    cwd + '/node_modules/jymin/scripts/ajax.js',
-    cwd + '/node_modules/jymin/scripts/arrays.js',
-    cwd + '/node_modules/jymin/scripts/dom.js',
-    cwd + '/node_modules/jymin/scripts/events.js',
-    cwd + '/node_modules/jymin/scripts/forms.js',
-    cwd + '/node_modules/jymin/scripts/history.js',
-    cwd + '/node_modules/jymin/scripts/logging.js',
-    cwd + '/node_modules/jymin/scripts/objects.js',
-    cwd + '/node_modules/jymin/scripts/strings.js',
-    cwd + '/node_modules/jymin/scripts/types.js',
-    cwd + '/scripts/d6-jymin.js'
+    dir + '/node_modules/jymin/scripts',
+    dir + '/scripts/d6-jymin.js'
   ]);
 
   source.concat('d6.js')
@@ -41,9 +30,9 @@ require('figlet').text('D6 Client v' + exports.version, {font: 'Standard'}, func
         " */\n\n\n" +
         asset.getContent() + "\n").replace(/[\t ]*\n/g, '\n'));
     })
-    .wrap('window')
+    .wrap()
+    .write(dir, 'd6-client.js')
     .minify()
-    .write(cwd, 'd6-client.js')
-    .write(cwd, 'd6-client.min.js', 'minified');
+    .write(dir, 'd6-client.min.js', 'minified');
 
 });

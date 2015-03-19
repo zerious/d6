@@ -3,203 +3,181 @@
  *
  * If you're already using Jymin, you can use this file with it.
  * Otherwise use ../d6-client.js which includes required Jymin functions.
+ *
+ * @use jymin/jymin.js
  */
 
-(function () {
+/**
+ * D6 is a function that accepts new views.
+ */
+var D6 = window.D6 = function (newViews) {
 
-  // If the browser doesn't work with D6, dont start D6.
-  if (!history.pushState) {
-    window.D6 = {};
+  var views = D6._views = {
+    '$': function(v){return (!v&&v!==0?'':(typeof v=='object'?Jymin.stringify(v)||'':''+v)).replace(/</g,'&lt;');},
+    '&': function(v){return Jymin.escape(!v&&v!==0?'':''+v);}
+  };
+  var cache = D6._cache = {};
+
+  Jymin.forIn(newViews, function (name, view) {
+    views[name] = view;
+  });
+
+  // Only get D6 ready if we can and should.
+  if (!history.pushState || D6._isReady) {
     return;
   }
 
-  var body = document.body;
-
-  /**
-   * The D6 function accepts new templates from /d6.js, etc.
-   */
-  var D6 = window.D6 = function (newViews) {
-    decorateObject(views, newViews);
-    if (!isReady) {
-      init();
+  // When a same-domain link is clicked, fetch it via XMLHttpRequest.
+  Jymin.on('a', 'click', function (a, event) {
+    var href = Jymin.getAttribute(a, 'href');
+    var url = removeHash(a.href);
+    var buttonNumber = event.which;
+    var isLeftClick = (!buttonNumber || (buttonNumber == 1));
+    if (isLeftClick) {
+      if (Jymin.startsWith(href, '#')) {
+        var name = href.substr(1);
+        Jymin.scrollToAnchor(name);
+        Jymin.historyReplace(url + href);
+        Jymin.preventDefault(event);
+        Jymin.stopPropagation(event);
+      }
+      else if (url && isSameDomain(url)) {
+        Jymin.preventDefault(event);
+        loadUrl(url, 0, a);
+      }
     }
-  };
+  });
 
-  var views = D6._VIEWS = {};
-
-  var cache = D6._CACHE = {};
-
-  var render = D6._RENDER = function (viewName, context) {
-    return views[viewName].call(views, context || D6._CONTEXT);
-  };
-
-  var isReady = false;
-
-  /**
-   * Initialization binds event handlers.
-   */
-  var init = function () {
-
-    // When a same-domain link is clicked, fetch it via XMLHttpRequest.
-    on('a', 'click', function (a, event) {
-      var href = getAttribute(a, 'href');
+  // When a same-domain link is hovered, prefetch it.
+  // TODO: Use mouse movement to detect probably targets.
+  Jymin.on('a', 'mouseover', function (a) {
+    if (!Jymin.hasClass(a, '_noprefetch')) {
       var url = removeHash(a.href);
-      var buttonNumber = event.which;
-      var isLeftClick = (!buttonNumber || (buttonNumber == 1));
-      if (isLeftClick) {
-        if (startsWith(href, '#')) {
-          var offset = 0;
-          var element;
-          var name = href.substr(1);
-          all('a', function (anchor) {
-            if (anchor.name == name) {
-              element = anchor;
-            };
-          });
-          while (element) {
-            offset += element.offsetTop || 0;
-            element = element.offsetParent || 0;
-          }
-          yScroll(offset - (body._OFFSET_TOP || 0));
-          historyReplace(url + href);
-          preventDefault(event);
-          stopPropagation(event);
-        }
-        else if (url && isSameDomain(url)) {
-          preventDefault(event);
-          loadUrl(url, 0, a);
-        }
+      var isDifferentPage = (url != removeHash(location));
+      if (isDifferentPage && isSameDomain(url)) {
+        prefetchUrl(url);
       }
-    });
+    }
+  });
 
-    // When a same-domain link is hovered, prefetch it.
-    // TODO: Use mouse movement to detect probably targets.
-    on('a', 'mouseover', function (a, event) {
-      if (!hasClass(a, '_NOPREFETCH')) {
-        var url = removeHash(a.href);
-        var isDifferentPage = (url != removeHash(location));
-        if (isDifferentPage && isSameDomain(url)) {
-          prefetchUrl(url);
-        }
-      }
-    });
+  // When a form field changes, timestamp the form.
+  Jymin.on('input,select,textarea', 'change', function (input) {
+    (input.form || 0)._lastChanged = Jymin.getTime();
+  });
 
-    // When a form field changes, timestamp the form.
-    on('input,select,textarea', 'change', function (input) {
-      var form = input.form;
+  // When a form button is clicked, attach it to the form.
+  Jymin.on('input,button', 'click', function (button) {
+    if (button.type == 'submit') {
+      var form = button.form;
       if (form) {
-        form._LAST_CHANGED = getTime();
+        if (form._clickedButton != button) {
+          form._clickedButton = button;
+          form._lastChanged = Jymin.getTime();
+        }
       }
-    });
+    }
+  });
 
-    // When a form button is clicked, attach it to the form.
-    on('input,button', 'click', function (button) {
-      if (button.type == 'submit') {
-        var form = button.form;
-        if (form) {
-          if (form._CLICKED_BUTTON != button) {
-            form._CLICKED_BUTTON = button;
-            form._LAST_CHANGED = getTime();
+  // When a form is submitted, gather its data and submit via XMLHttpRequest.
+  Jymin.on('form', 'submit', function (form, event) {
+    var url = removeHash(form.action || removeQuery(location));
+    var enc = Jymin.getAttribute(form, 'enctype');
+    var isGet = (Jymin.lower(form.method) == 'get');
+    if (isSameDomain(url) && !/multipart/.test(enc)) {
+      Jymin.preventDefault(event);
+
+      var isValid = form._validate ? form._validate() : true;
+      if (!isValid) {
+        return;
+      }
+
+      // Get form data.
+      var data = [];
+      Jymin.all(form, 'input,select,textarea,button', function (input) {
+        var name = input.name;
+        var type = input.type;
+        var value = Jymin.getValue(input);
+        var ignore = !name;
+        ignore = ignore || ((type == 'radio') && !value);
+        ignore = ignore || ((type == 'submit') && (input != form._clickedButton));
+        if (!ignore) {
+          var pushFormValue = function (value) {
+            Jymin.push(data, Jymin.escape(name) + '=' + Jymin.escape(value));
+          };
+          if (Jymin.isString(value)) {
+            pushFormValue(value);
+          }
+          else {
+            Jymin.forEach(value, pushFormValue);
           }
         }
+      });
+      url = appendData(url, 'v=' + Jymin.getTime());
+
+      // For a get request, append data to the URL.
+      if (isGet) {
+        url = appendData(data.join('&'));
+        data = 0;
       }
-    });
-
-    // When a form is submitted, gather its data and submit via XMLHttpRequest.
-    on('form', 'submit', function (form, event) {
-      var url = removeHash(form.action || location.href.replace(/\?.*$/, ''));
-      var enc = getAttribute(form, 'enctype');
-      var isGet = (lower(form.method) == 'get');
-      if (isSameDomain(url) && !/multipart/.test(enc)) {
-        preventDefault(event);
-
-        var isValid = form._VALIDATE ? form._VALIDATE() : true;
-        if (!isValid) {
-          return;
-        }
-
-        // Get form data.
-        var data = [];
-        all(form, 'input,select,textarea,button', function (input) {
-          var name = input.name;
-          var type = input.type;
-          var value = getValue(input);
-          var ignore = !name;
-          ignore = ignore || ((type == 'radio') && !value);
-          ignore = ignore || ((type == 'submit') && (input != form._CLICKED_BUTTON));
-          if (!ignore) {
-            if (isString(value)) {
-              push(data, escape(name) + '=' + escape(value));
-            }
-            else {
-              forEach(value, function (val) {
-                push(data, escape(name) + '=' + escape(val));
-              });
-            }
-          }
-        });
-
-        // For a get request, append data to the URL.
-        if (isGet) {
-          url += (contains(url, '?') ? '&' : '?') + data.join('&');
-          data = 0;
-        }
-        // If posting, append a timestamp so we can repost with this base URL.
-        else {
-          url = appendD6Param(url, form._LAST_CHANGED);
-          data = data.join('&');
-        }
-
-        // Submit form data to the URL.
-        loadUrl(url, data, form);
+      // If posting, append a timestamp so we can repost with this base URL.
+      else {
+        url = appendExtension(url);
+        data = data.join('&');
       }
-    });
 
-    var currentLocation = location;
+      // Submit form data to the URL.
+      loadUrl(url, data, form);
+    }
+  });
 
-    // When a user presses the back button, render the new URL.
-    onHistoryPop(function (event) {
-      loadUrl(location);
-    });
+  // When a user presses the back button, render the new URL.
+  Jymin.onHistoryPop(function () {
+    loadUrl(location);
+  });
 
-    isReady = true;
-  };
+  var loadingUrl;
 
   var isSameDomain = function (url) {
-    return startsWith(url, location.protocol + '//' + location.host + '/');
+    return Jymin.startsWith(url, location.protocol + '//' + location.host + '/');
   };
 
   var removeHash = function (url) {
-    return ensureString(url).replace(/#.*$/, '');
+    return Jymin.ensureString(url).split('#')[0];
   };
 
   var removeQuery = function (url) {
-    return ensureString(url).replace(/\?.*$/, '');
+    return Jymin.ensureString(url).split('?')[0];
   };
 
-  var appendD6Param = function (url, number) {
-    return url + (contains(url, '?') ? '&' : '?') + 'd6=' + (number || 1);
+  var appendExtension = function (url) {
+    return removeExtension(url).replace(/(\?|$)/, '.json$1');
   };
 
-  var removeD6Param = function (url) {
-    return ensureString(url).replace(/[&\?]d6=[r\d]+/g, '');
+  var appendData = function (url, data) {
+    return Jymin.ensureString(url) +
+      (url.indexOf('?') > -1 ? '&' : '?') +
+      data;
   };
 
-  var yScroll = function (y) {
-    body.scrollTop = document.documentElement.scrollTop = y;
+  var removeExtension = function (url) {
+    return Jymin.ensureString(url).replace(/\.json/g, '');
+  };
+
+  var removeCacheBust = function (url) {
+    return url.replace(/(\?v=\d+$|&v=\d+)/, '');
   };
 
   var prefetchUrl = function (url) {
     // Only proceed if it's not already prefetched.
     if (!cache[url]) {
       //+env:debug
-      log('[D6] Prefetching "' + url + '".');
+      Jymin.log('[D6] Prefetching "' + url + '".');
       //-env:debug
 
       // Create a callback queue to execute when data arrives.
       cache[url] = [function (response) {
         //+env:debug
-        log('[D6] Caching contents for prefetched URL "' + url + '".');
+        Jymin.log('[D6] Caching contents for prefetched URL "' + url + '".');
         //-env:debug
 
         // Cache the response so data can be used without a queue.
@@ -209,9 +187,9 @@
         var ttl = response.ttl || 1e4;
         setTimeout(function () {
           // Only delete if it's not a new callback queue.
-          if (!isArray(cache[url])) {
+          if (!Jymin.isArray(cache[url])) {
             //+env:debug
-            log('[D6] Removing "' + url + '" from prefetch cache.');
+            Jymin.log('[D6] Removing "' + url + '" from prefetch cache.');
             //-env:debug
             delete cache[url];
           }
@@ -224,29 +202,32 @@
   /**
    * Load a URL via GET request.
    */
-  var loadUrl = D6._LOAD_URL = function (url, data, sourceElement) {
-    D6._LOADING_URL = removeD6Param(url);
-    D6._LOAD_STARTED = getTime();
+  var loadUrl = function (url, data, sourceElement) {
+    loadingUrl = removeExtension(url);
+    var targetSelector, targetView;
 
-    var targetSelector = getData(sourceElement, '_D6_TARGET');
-    var targetView = getData(sourceElement, '_D6_VIEW');
-    if (targetSelector) {
-      all(targetSelector, function (element) {
-        addClass(element, '_D6_TARGET');
-      });
+    // If the URL is being loaded for a link or form, paint the target.
+    if (sourceElement) {
+      targetSelector = Jymin.getData(sourceElement, '_d6Target');
+      targetView = Jymin.getData(sourceElement, '_d6View');
+      if (targetSelector) {
+        Jymin.all(targetSelector, function (element) {
+          Jymin.addClass(element, '_d6Target');
+        });
+      }
     }
 
     //+env:debug
-    log('[D6] Loading "' + url + '".');
+    Jymin.log('[D6] Loading "' + url + '".');
     //-env:debug
 
     // Set all spinners in the page to their loading state.
-    all('._SPINNER', function (spinner) {
-      addClass(spinner, '_LOADING');
+    Jymin.all('._spinner', function (spinner) {
+      Jymin.addClass(spinner, '_loading');
     });
 
-    var handler = function (context, url) {
-      renderResponse(context, url, targetSelector, targetView);
+    var handler = function (state, url) {
+      renderResponse(state, url, targetSelector, targetView);
     };
 
     // A resource is either a cached response, a callback queue, or nothing.
@@ -255,22 +236,22 @@
     // If there's no resource, start the JSON request.
     if (!resource) {
       //+env:debug
-      log('[D6] Creating callback queue for "' + url + '".');
+      Jymin.log('[D6] Creating callback queue for "' + url + '".');
       //-env:debug
       cache[url] = [handler];
       getD6Json(url, data);
     }
     // If the "resource" is a callback queue, then pushing means listening.
-    else if (isArray(resource)) {
+    else if (Jymin.isArray(resource)) {
       //+env:debug
-      log('[D6] Queueing callback for "' + url + '".');
+      Jymin.log('[D6] Queueing callback for "' + url + '".');
       //-env:debug
-      push(resource, handler);
+      Jymin.push(resource, handler);
     }
     // If the resource exists and isn't an array, render it.
     else {
       //+env:debug
-      log('[D6] Found precached response for "' + url + '".');
+      Jymin.log('[D6] Found precached response for "' + url + '".');
       //-env:debug
       handler(resource, url);
     }
@@ -281,66 +262,65 @@
    */
   var getD6Json = function (url, data) {
     //+env:debug
-    log('[D6] Fetching response for "' + url + '".');
+    Jymin.log('[D6] Fetching response for "' + url + '".');
     //-env:debug
 
     // Indicate with a URL param that D6 is requesting data, so we'll get JSON.
-    var d6Url = appendD6Param(url);
+    var jsonUrl = appendExtension(url);
 
     // When data is received, cache the response and execute callbacks.
     var onComplete = function (data) {
       var queue = cache[url];
       cache[url] = data;
       //+env:debug
-      log('[D6] Running ' + queue.length + ' callback(s) for "' + url + '".');
+      Jymin.log('[D6] Running ' + queue.length + ' callback(s) for "' + url + '".');
       //-env:debug
-      forEach(queue, function (callback) {
+      Jymin.forEach(queue, function (callback) {
         callback(data, url);
       });
     };
 
     // Fire the JSON request.
-    getResponse(d6Url, data, onComplete, onComplete, 1);
+    Jymin.getResponse(jsonUrl, data, onComplete, onComplete);
   };
 
-  // Render a template with the given context, and display the resulting HTML.
-  var renderResponse = function (context, requestUrl, targetSelector, targetView) {
-    D6._CONTEXT = context;
-    var err = context._ERROR;
-    var responseUrl = removeD6Param(context.d6u || requestUrl);
-    var viewName = targetView || context.d6 || 'error0';
-    var view = D6._VIEW = views[viewName];
+  // Render a template with the given state, and display the resulting HTML.
+  var renderResponse = function (state, requestUrl, targetSelector, targetView) {
+    D6._state = state;
+    var responseUrl = removeExtension(state.d6u || requestUrl);
+    var viewName = targetView || state.d6 || 'error0';
+    var view = D6._view = views[viewName];
     var html;
-    requestUrl = removeD6Param(requestUrl);
+    requestUrl = removeExtension(requestUrl);
 
     // Make sure the URL we render is the last one we tried to load.
-    if (requestUrl == D6._LOADING_URL) {
+    if (requestUrl == loadingUrl) {
 
       // Reset any spinners.
-      all('._SPINNER,._D6_TARGET', function (spinner) {
-        removeClass(spinner, '_LOADING');
+      Jymin.all('._spinner,._d6Target', function (spinner) {
+        Jymin.removeClass(spinner, '_loading');
       });
 
       // If we received HTML, try rendering it.
-      if (trim(context)[0] == '<') {
-        html = context;
+      if (Jymin.trim(state)[0] == '<') {
+        html = state;
         //+env:debug
-        log('[D6] Rendering HTML string');
+        Jymin.log('[D6] Rendering HTML string');
         //-env:debug
       }
 
-      // If the context refers to a view that we have, render it.
+      // If the state refers to a view that we have, render it.
       else if (view) {
-        html = view.call(views, context);
+        html = view.call(views, state);
         //+env:debug
-        log('[D6] Rendering view "' + viewName + '".');
+        Jymin.log('[D6] Rendering view "' + viewName + '".');
         //-env:debug
       }
 
       // If we can't find a corresponding view, navigate the old-fashioned way.
       else {
         //+env:debug
-        error('[D6] View "' + viewName + '" not found. Changing location.');
+        Jymin.error('[D6] View "' + viewName + '" not found. Changing location.');
         //-env:debug
         window.location = responseUrl;
       }
@@ -348,67 +328,27 @@
 
     // If there's HTML to render, show it as a page.
     if (html) {
-      writeHtml(html, targetSelector);
+      Jymin.pushHtml(html, targetSelector);
 
       // Change the location bar to reflect where we are now.
       var isSamePage = removeQuery(responseUrl) == removeQuery(location.href);
-      var historyMethod = isSamePage ? historyReplace : historyPush;
-      historyMethod(responseUrl);
+      var historyMethod = isSamePage ? Jymin.historyReplace : Jymin.historyPush;
+      historyMethod(removeCacheBust(responseUrl));
 
       // If we render this page again, we'll want fresh data.
       delete cache[requestUrl];
     }
   };
 
-  /**
-   * Overwrite the page with new HTML, and execute embedded scripts.
-   */
-  var writeHtml = function (html, targetSelector) {
-    match(html, /<title.*?>([\s\S]+)<\/title>/, function (tag, title) {
-      document.title = title;
-    });
-    var scripts = [];
-    html = html.replace(/<script.*?>([\s\S]*?)<\/script>/g, function (tag, js) {
-      if (js) {
-        scripts.push(js);
-        tag = '';
-      }
-      return tag;
-    });
-    // If we're just replacing the HTML of a target element, do so.
-    if (targetSelector) {
-      all(targetSelector, function (element) {
-        setHtml(element, html);
-      });
-      forEach(scripts, execute);
-      all(targetSelector, function (element) {
-        onReady(element);
-      });
-    }
-    // Otherwise, grab the body content, and mimic a page transition.
-    else {
-      match(html, /<body.*?>([\s\S]+)<\/body>/, function (tag, html) {
-        setHtml(body, html);
-        yScroll(0);
-      });
-      forEach(scripts, execute);
-      onReady(body);
-    }
-  };
+  // Trigger the "ready" event on the D6 object.
+  Jymin.ready(D6);
+};
 
-  /**
-   * Insert a script to load D6 templates.
-   */
-  setTimeout(function () {
-    var cacheBust = '';
-    one('link,script', function (element) {
-      var delimiter = '?v=';
-      var pair = ensureString(element.src || element.href).split(delimiter);
-      if (pair[1]) {
-        cacheBust = delimiter + pair[1];
-      }
-    });
-    insertScript('/d6.js' + cacheBust);
-  }, 1);
-
-})();
+/**
+ * Insert a script to load D6 templates.
+ */
+Jymin.all('script', function (element) {
+  var pair = (element.src || '').split('?');
+  D6._cacheBust = D6._cacheBust || pair[1] || ('v=' + Jymin.getTime().toString(36));
+  return !Jymin.insertScript('/d6.js?' + D6._cacheBust);
+});

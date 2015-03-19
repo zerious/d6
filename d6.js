@@ -1,14 +1,12 @@
 var zlib = require('zlib');
-var http = require('./lib/http');
 
 /**
- * Accept an app that has an Express-like server and chugged views.
+ * Accept a chug library object, and add a filter.
  */
 var d6 = module.exports = function (app) {
 
-  app.chug.onReady(function () {
+  app.chug.onceReady(function () {
 
-    var server = app.server;
     var views = app.views;
 
     // Iterate over the views building an array of key-value pair strings.
@@ -17,8 +15,15 @@ var d6 = module.exports = function (app) {
       var compiled = asset.getCompiledContent();
       var minified = asset.getMinifiedContent();
       var key = compiled.key.replace(/"/g, '\\"');
-      pairs.push('"' + key + '":' + minified.toString());
+      pairs.push(JSON.stringify(key) + ':' + minified.toString());
     });
+
+    // If using Ltl, include escaping functions.
+    var ltl = process.ltl;
+    if (ltl) {
+      pairs.push('$:' + ltl.$.toString());
+      pairs.push('"&":' + ltl['&'].toString());
+    }
 
     // Route the views with pre-zipping so clients can download them quickly.
     views.then(function () {
@@ -30,8 +35,8 @@ var d6 = module.exports = function (app) {
       var url = '/d6.js';
       var code = 'D6({' + br + tab + pairs.join(',' + br + tab) + br + '});';
       zlib.gzip(code, function (err, zipped) {
-        app.server.get(url, function (request, response, next) {
-          response.statusCode = 200;
+        app.server.get(url, function (request, response) {
+          response.sd6usCode = 200;
           response.setHeader('content-type', 'text/javascript');
           if (response.zip) {
             response.zip(code, zipped);
@@ -41,7 +46,7 @@ var d6 = module.exports = function (app) {
           }
         });
         var colorUrl = url.cyan || url;
-        var logInfo = (app.logger || console).info;
+        var logInfo = (app.log || console).info;
         logInfo('[D6] Views routed to ' + colorUrl + '.');
       });
     });
@@ -57,3 +62,10 @@ Object.defineProperty(d6, 'version', {
     return require(__dirname + '/package.json').version;
   }
 });
+
+/**
+ * Expose the paths to D6's front-end scripts.
+ */
+d6.jymin = __dirname + '/scripts/d6-jymin.js';
+d6.client = __dirname + '/d6-client.js';
+d6.clientMin = __dirname + '/d6-client.min.js';
