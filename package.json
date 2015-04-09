@@ -1,6 +1,6 @@
 {
   "name": "d6",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "An isomorphic JavaScript transport for conditional tier rendering",
   "dependencies": {},
   "devDependencies": {

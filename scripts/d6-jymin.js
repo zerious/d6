@@ -132,7 +132,9 @@ var D6 = window.D6 = function (newViews) {
 
   // When a user presses the back button, render the new URL.
   Jymin.onHistoryPop(function () {
-    loadUrl(location);
+    if (location != loadingUrl) {
+      loadUrl(location);
+    }
   });
 
   var loadingUrl;
